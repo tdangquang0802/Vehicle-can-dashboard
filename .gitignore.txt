@@ -1,0 +1,16 @@
+# Build output
+build/
+out/
+
+# Qt
+*.pro.user
+*.qmlc
+*.jsc
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
