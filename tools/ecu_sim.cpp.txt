@@ -1,0 +1,91 @@
+#include <iostream>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#include <linux/can.h>
+#include <linux/can/raw.h>
+
+#define CMD_SOCKET "/tmp/ecu_cmd.sock"
+
+struct EcuState {
+    int rpm = 800;
+    int speed = 0;
+    int coolant = 70;
+    bool throttle = false;
+    bool brake = false;
+};
+
+int main() {
+    // ---------- CAN socket ----------
+    int canFd = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+
+    struct ifreq ifr{};
+    strcpy(ifr.ifr_name, "vcan0");
+    ioctl(canFd, SIOCGIFINDEX, &ifr);
+
+    struct sockaddr_can addr{};
+    addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
+    bind(canFd, (sockaddr*)&addr, sizeof(addr));
+
+    // ---------- Command socket ----------
+    unlink(CMD_SOCKET);
+    int cmdFd = socket(AF_UNIX, SOCK_DGRAM, 0);
+
+    sockaddr_un cmdAddr{};
+    cmdAddr.sun_family = AF_UNIX;
+    strcpy(cmdAddr.sun_path, CMD_SOCKET);
+    bind(cmdFd, (sockaddr*)&cmdAddr, sizeof(cmdAddr));
+    fcntl(cmdFd, F_SETFL, O_NONBLOCK);
+
+    EcuState s;
+    can_frame frame{};
+    frame.can_id = 0x100;
+    frame.can_dlc = 8;
+
+    std::cout << "[ECU] Running\n";
+
+    while (true) {
+        // ---- receive command ----
+        char buf[32];
+        int n = recv(cmdFd, buf, sizeof(buf)-1, 0);
+        if (n > 0) {
+            buf[n] = 0;
+            if (!strcmp(buf,"THROTTLE_ON")) s.throttle = true;
+            if (!strcmp(buf,"THROTTLE_OFF")) s.throttle = false;
+            if (!strcmp(buf,"BRAKE_ON")) s.brake = true;
+            if (!strcmp(buf,"BRAKE_OFF")) s.brake = false;
+            if (!strcmp(buf,"RESET")) s = EcuState{};
+        }
+
+        // ---- vehicle model (simple) ----
+        int accel = (s.throttle ? 3 : 0) - (s.brake ? 5 : 0);
+        s.speed += accel;
+        if (s.speed < 0) s.speed = 0;
+        if (s.speed > 200) s.speed = 200;
+
+        int targetRpm = 800 + s.speed * 30;
+        s.rpm += (targetRpm - s.rpm) * 0.2;
+
+        if (s.coolant < 95 && s.rpm > 2500) s.coolant++;
+
+        // ---- encode CAN ----
+        int rpmRaw = s.rpm * 4;
+        frame.data[0] = rpmRaw >> 8;
+        frame.data[1] = rpmRaw & 0xFF;
+        frame.data[2] = s.speed;
+        frame.data[3] = s.coolant + 40;
+
+        write(canFd, &frame, sizeof(frame));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+}

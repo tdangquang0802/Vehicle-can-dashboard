@@ -1,0 +1,44 @@
+# System Architecture
+
+## Overview
+This project follows a modular architecture that separates
+CAN communication logic from the UI layer.
+
+The design simulates a typical automotive HMI system where
+vehicle data is collected from the CAN bus and visualized
+in real time.
+
+## Architecture Diagram (Logical)
+
+CAN Source (SocketCAN / Simulator)
+        ↓
+CAN Receiver (C++)
+        ↓
+CAN Parser & Signal Mapping
+        ↓
+Qt Signal/Slot
+        ↓
+QML Dashboard UI
+
+## Backend Layer
+- CAN Receiver:
+  - Responsible for receiving raw CAN frames
+  - Supports both real CAN and simulated input
+- CAN Parser:
+  - Decodes CAN ID and data bytes
+  - Maps frames to vehicle signals (RPM, speed, temperature)
+
+## UI Layer
+- QML Dashboard
+- Receives parsed signals via Qt properties
+- Designed for real-time updates
+
+## Design Decisions
+- Separation of backend and UI for scalability
+- CAN simulation support to enable development without hardware
+- Signal-slot communication to ensure thread safety
+
+## Future Improvements
+- DBC-based signal parsing
+- UDS diagnostics integration
+- Multi-threaded CAN processing
