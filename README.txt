@@ -35,3 +35,13 @@ commonly used in automotive embedded software.
 - Add DTC (Diagnostic Trouble Codes)
 - Support real CAN hardware
 - Improve UI animations
+
+## What I Learned
+- Practical understanding of CAN bus message structure
+- Designing modular backend–UI architecture
+- Qt signal-slot mechanism for real-time data flow
+- Using GitHub as a professional portfolio
+
+## Challenges
+- Synchronizing real-time CAN data with UI updates
+- Designing UI layout suitable for automotive dashboards
