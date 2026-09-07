@@ -1,0 +1,31 @@
+# ===== STM32CubeIDE / Eclipse build artifacts =====
+Debug/
+Release/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.su
+
+# ===== Eclipse / CubeIDE workspace metadata (máy ai cũng khác nhau) =====
+.metadata/
+.settings/
+.cproject
+.project
+.mxproject
+
+# ===== STM32CubeMX cache (tự sinh lại khi mở .ioc) =====
+*.launch
+
+# ===== File hệ điều hành / editor rác =====
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ===== Log, file tạm =====
+*.log
+*.tmp
