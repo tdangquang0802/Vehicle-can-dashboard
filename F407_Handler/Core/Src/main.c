@@ -232,6 +232,7 @@ static void CAN_SendFault(uint8_t faultCode)
 static void vTask_VehicleCycle(void *argument)
 {
     (void)argument;
+    UART2_Print("[DBG] task entered\r\n");
     TickType_t lastWake = xTaskGetTickCount();
     uint16_t cycleTimeS = 0;
 
@@ -255,7 +256,11 @@ static void vTask_VehicleCycle(void *argument)
         cP.phase = phase;
         memcpy(txData, &cP, sizeof(cP));
 
-        if (CAN_SendAndWaitAck(CAN_ID_SIM_VEHICLE_CYCLE, CAN_MSG_VEHICLE_CYCLE, cP.seq, txData))
+        uint32_t t0 = HAL_GetTick();
+        uint8_t sendOk = CAN_SendAndWaitAck(CAN_ID_SIM_VEHICLE_CYCLE, CAN_MSG_VEHICLE_CYCLE, cP.seq, txData);
+        uint32_t elapsed = HAL_GetTick() - t0;
+
+        if (sendOk)
         {
             sprintf(msg, "[CYCLE] t=%us speed=%u.%ukm/h rpm=%u phase=%u\r\n",
                     cycleTimeS, speedX10 / 10, speedX10 % 10, cP.rpm, phase);
@@ -266,6 +271,17 @@ static void vTask_VehicleCycle(void *argument)
             CAN_SendFault(1);
         }
         UART2_Print(msg);
+
+        /* ---- debug: timing + bus error state ---- */
+        char dbg[96];
+        sprintf(dbg, "[DBG] send took %lums\r\n", (unsigned long)elapsed);
+        UART2_Print(dbg);
+
+        sprintf(dbg, "[DBG] ESR=0x%08lX TEC=%lu REC=%lu\r\n",
+                (unsigned long)hcan1.Instance->ESR,
+                (unsigned long)((hcan1.Instance->ESR >> 16) & 0xFF),
+                (unsigned long)((hcan1.Instance->ESR >> 24) & 0xFF));
+        UART2_Print(dbg);
 
         cycleTimeS++; /* advance the virtual clock by one sample period (1s) */
 
@@ -309,11 +325,17 @@ int main(void)
   /* USER CODE BEGIN 2 */
   UART2_Print("F407 Vehicle Cycle Simulator (FreeRTOS) starting...\r\n");
 
-      hCanTxMutex   = xSemaphoreCreateMutex();
-      hAckSemaphore = xSemaphoreCreateBinary();
+  hCanTxMutex   = xSemaphoreCreateMutex();
+  hAckSemaphore = xSemaphoreCreateBinary();
+  HAL_CAN_Start(&hcan1);
+  HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
+  char dbg[64];
+  sprintf(dbg, "[DBG] mutex=%p sem=%p\r\n", (void*)hCanTxMutex, (void*)hAckSemaphore);
+  UART2_Print(dbg);
 
-      xTaskCreate(vTask_VehicleCycle, "Cycle", TASK_STACK_SIZE, NULL, TASK_PRIO_CYCLE, NULL);
-
+      BaseType_t taskResult = xTaskCreate(vTask_VehicleCycle, "Cycle", TASK_STACK_SIZE, NULL, TASK_PRIO_CYCLE, NULL);
+      sprintf(dbg, "[DBG] xTaskCreate result=%ld (pdPASS=%ld)\r\n", (long)taskResult, (long)pdPASS);
+      UART2_Print(dbg);
       vTaskStartScheduler();
   /* USER CODE END 2 */
 
@@ -419,8 +441,7 @@ static void MX_CAN1_Init(void)
       canFilter.SlaveStartFilterBank = 14;
       HAL_CAN_ConfigFilter(&hcan1, &canFilter);
 
-      HAL_CAN_Start(&hcan1);
-      HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
+
   /* USER CODE END CAN1_Init 2 */
 
 }
