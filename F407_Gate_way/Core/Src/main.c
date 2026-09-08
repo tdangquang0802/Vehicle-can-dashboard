@@ -215,6 +215,11 @@ static void vTask_CanRxProcess(void *argument)
         uint32_t node = CAN_GET_NODE(item.stdId);
         uint32_t type = CAN_GET_TYPE(item.stdId);
 
+        char dbg[64];
+        sprintf(dbg, "[GW-DBG] rx stdId=0x%03lX node=%lu type=%lu\r\n",
+                (unsigned long)item.stdId, (unsigned long)node, (unsigned long)type);
+        UART2_Print(dbg);
+
         if (node != CAN_NODE_SIM) { continue; }
 
         uint8_t seq = 0;
@@ -308,8 +313,17 @@ int main(void)
    hAggMutex   = xSemaphoreCreateMutex();
    hNewDataSem = xSemaphoreCreateBinary();
 
-   xTaskCreate(vTask_CanRxProcess, "CanRx", TASK_STACK_SIZE, NULL, TASK_PRIO_CAN_RX,  NULL);
-   xTaskCreate(vTask_UartPush,     "UartTx", TASK_STACK_SIZE, NULL, TASK_PRIO_UART_TX, NULL);
+   HAL_CAN_Start(&hcan1);
+   HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
+
+   BaseType_t r1 = xTaskCreate(vTask_CanRxProcess, "CanRx",  TASK_STACK_SIZE, NULL, TASK_PRIO_CAN_RX,  NULL);
+   BaseType_t r2 = xTaskCreate(vTask_UartPush,     "UartTx", TASK_STACK_SIZE, NULL, TASK_PRIO_UART_TX, NULL);
+
+   char dbg[64];
+   sprintf(dbg, "[DBG] r1=%ld r2=%ld heapFree=%lu\r\n",
+           (long)r1, (long)r2, (unsigned long)xPortGetFreeHeapSize());
+   UART2_Print(dbg);
+
 
    vTaskStartScheduler();
   /* USER CODE END 2 */
@@ -417,8 +431,7 @@ static void MX_CAN1_Init(void)
       canFilter.SlaveStartFilterBank = 14;
       HAL_CAN_ConfigFilter(&hcan1, &canFilter);
 
-      HAL_CAN_Start(&hcan1);
-      HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
+
   /* USER CODE END CAN1_Init 2 */
 
 }
