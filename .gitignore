@@ -6,3 +6,8 @@
 !/F407_Gate_way/
 !/.gitignore
 !/README.md
+build-*/
+*.user
+*.user.*
+.qmake.stash
+Makefile*
