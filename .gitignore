@@ -6,8 +6,11 @@
 !/F407_Gate_way/
 !/.gitignore
 !/README.md
+!/ProjectDashBoard/
 build-*/
 *.user
 *.user.*
 .qmake.stash
 Makefile*
+ProjectDashBoard/build/
+ProjectDashBoard/build-*/
