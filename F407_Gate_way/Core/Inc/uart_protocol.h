@@ -42,14 +42,16 @@ typedef enum {
 /* PC_MSG_CYCLE_SNAPSHOT : 9-byte payload.
  * Gateway sends this either immediately when a new CAN frame arrives, or
  * periodically (every UART_PUSH_INTERVAL_MS) if there is nothing new. */
+#pragma pack(push, 1)
 typedef struct {
-    uint16_t cycle_time_s;    /* offset 0-1 : elapsed time within the cycle loop, seconds */
-    uint16_t speed_x10_kmh;   /* offset 2-3 : simulated speed, km/h * 10                  */
-    uint16_t rpm;             /* offset 4-5 : equivalent wheel RPM                        */
-    uint8_t  phase;           /* offset 6   : 0=IDLE, 1=ACCEL, 2=CRUISE, 3=DECEL          */
-    uint8_t  data_valid;      /* offset 7   : 1 = fresh (< UART_STALE_TIMEOUT_MS)         */
-    uint8_t  reserved;        /* offset 8   : always 0x00                                 */
-} __attribute__((packed)) UART_CycleSnapshot_t;
+    uint8_t  seq;           // 1 byte
+    uint16_t cycle_time_s;  // 2 bytes
+    uint16_t speed_x10_kmh; // 2 bytes
+    uint16_t rpm;           // 2 bytes
+    uint8_t  phase;         // 1 byte
+    uint32_t last_ms;       // 4 bytes
+} UART_CycleSnapshot_t;
+#pragma pack(pop)
 
 /* PC_MSG_LINK_STATUS : 5-byte payload (reserved, not sent by current firmware) */
 typedef struct {
