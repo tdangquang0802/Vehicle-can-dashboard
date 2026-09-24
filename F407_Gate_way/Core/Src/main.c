@@ -37,6 +37,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -72,6 +73,7 @@ CAN_HandleTypeDef hcan1;
 
 UART_HandleTypeDef huart2;
 
+osThreadId defaultTaskHandle;
 /* USER CODE BEGIN PV */
 #define TX_LED_GPIO_Port    GPIOD
 #define TX_LED_Pin          GPIO_PIN_12  /* LD4 */
@@ -89,12 +91,13 @@ typedef struct {
 } CanRxItem_t;
 
 typedef struct {
+	uint8_t seq;
     uint16_t cycle_time_s;
     uint16_t speed_x10_kmh;
     uint16_t rpm;
     uint8_t  phase;
     uint32_t last_ms;
-} CycleAggregate_t;
+} __attribute__((packed)) CycleAggregate_t;
 
 static CycleAggregate_t g_agg = {0};
 
@@ -107,8 +110,10 @@ static SemaphoreHandle_t hNewDataSem;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_USART2_UART_Init(void);
 static void MX_CAN1_Init(void);
+static void MX_USART2_UART_Init(void);
+void StartDefaultTask(void const * argument);
+
 /* USER CODE BEGIN PFP */
 static void CAN_SendAck(uint8_t msgtypeEcho, uint8_t seqEcho, uint8_t status);
 static void UART_SendFrame(uint8_t msgId, const uint8_t *payload, uint8_t len);
@@ -148,15 +153,15 @@ static void UART_SendFrame(uint8_t msgId, const uint8_t *payload, uint8_t len)
 
 static void UART_PushSnapshot(void)
 {
-    uint32_t now = HAL_GetTick();
     UART_CycleSnapshot_t snap = {0};
 
     xSemaphoreTake(hAggMutex, portMAX_DELAY);
+    snap.seq           = g_agg.seq;
     snap.cycle_time_s  = g_agg.cycle_time_s;
     snap.speed_x10_kmh = g_agg.speed_x10_kmh;
     snap.rpm           = g_agg.rpm;
     snap.phase         = g_agg.phase;
-    snap.data_valid    = ((now - g_agg.last_ms) < UART_STALE_TIMEOUT_MS) ? 1 : 0;
+    snap.last_ms       = g_agg.last_ms;
     xSemaphoreGive(hAggMutex);
 
     UART_SendFrame(PC_MSG_CYCLE_SNAPSHOT, (uint8_t *)&snap, sizeof(snap));
@@ -215,10 +220,10 @@ static void vTask_CanRxProcess(void *argument)
         uint32_t node = CAN_GET_NODE(item.stdId);
         uint32_t type = CAN_GET_TYPE(item.stdId);
 
-        char dbg[64];
-        sprintf(dbg, "[GW-DBG] rx stdId=0x%03lX node=%lu type=%lu\r\n",
-                (unsigned long)item.stdId, (unsigned long)node, (unsigned long)type);
-        UART2_Print(dbg);
+//        char dbg[64];
+//        sprintf(dbg, "[GW-DBG] rx stdId=0x%03lX node=%lu type=%lu\r\n",
+//                (unsigned long)item.stdId, (unsigned long)node, (unsigned long)type);
+//        UART2_Print(dbg);
 
         if (node != CAN_NODE_SIM) { continue; }
 
@@ -228,12 +233,12 @@ static void vTask_CanRxProcess(void *argument)
 
         switch (type)
         {
-            case CAN_MSG_VEHICLE_CYCLE:
+        	case CAN_MSG_VEHICLE_CYCLE:
             {
-                CAN_VehicleCyclePayload_t *p = (CAN_VehicleCyclePayload_t *)item.data;
+            	CAN_VehicleCyclePayload_t *p = (CAN_VehicleCyclePayload_t *)item.data;
                 seq = p->seq;
-
                 xSemaphoreTake(hAggMutex, portMAX_DELAY);
+                g_agg.seq           = p->seq;
                 g_agg.cycle_time_s  = p->cycle_time_s;
                 g_agg.speed_x10_kmh = p->speed_x10_kmh;
                 g_agg.rpm           = p->rpm;
@@ -304,8 +309,8 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_USART2_UART_Init();
   MX_CAN1_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   UART2_Print("F407 Gateway (FreeRTOS) starting...\r\n");
 
@@ -319,19 +324,51 @@ int main(void)
    BaseType_t r1 = xTaskCreate(vTask_CanRxProcess, "CanRx",  TASK_STACK_SIZE, NULL, TASK_PRIO_CAN_RX,  NULL);
    BaseType_t r2 = xTaskCreate(vTask_UartPush,     "UartTx", TASK_STACK_SIZE, NULL, TASK_PRIO_UART_TX, NULL);
 
-   char dbg[64];
-   sprintf(dbg, "[DBG] r1=%ld r2=%ld heapFree=%lu\r\n",
-           (long)r1, (long)r2, (unsigned long)xPortGetFreeHeapSize());
-   UART2_Print(dbg);
+//   char dbg[64];
+//   sprintf(dbg, "[DBG] r1=%ld r2=%ld heapFree=%lu\r\n",
+//           (long)r1, (long)r2, (unsigned long)xPortGetFreeHeapSize());
+//   UART2_Print(dbg);
 
 
-   vTaskStartScheduler();
+//   vTaskStartScheduler();
   /* USER CODE END 2 */
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* definition and creation of defaultTask */
+  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
+  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+//	  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_13);
+//	  HAL_Delay(500);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -422,9 +459,9 @@ static void MX_CAN1_Init(void)
       canFilter.FilterBank = 0;
       canFilter.FilterMode = CAN_FILTERMODE_IDMASK;
       canFilter.FilterScale = CAN_FILTERSCALE_32BIT;
-      canFilter.FilterIdHigh = (CAN_FILTER_ID_FROM_SIM << 5);
+      canFilter.FilterIdHigh = 0x0000; 					//(CAN_FILTER_ID_FROM_SIM << 5);
       canFilter.FilterIdLow = 0x0000;
-      canFilter.FilterMaskIdHigh = (CAN_FILTER_MASK_NODE_ONLY << 5);
+      canFilter.FilterMaskIdHigh = 0x0000;                    //(CAN_FILTER_MASK_NODE_ONLY << 5);
       canFilter.FilterMaskIdLow = 0x0000;
       canFilter.FilterFIFOAssignment = CAN_RX_FIFO0;
       canFilter.FilterActivation = ENABLE;
@@ -521,6 +558,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
   HAL_GPIO_Init(PDM_OUT_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pin : I2S3_WS_Pin */
   GPIO_InitStruct.Pin = I2S3_WS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
@@ -536,6 +579,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : BOOT1_Pin */
+  GPIO_InitStruct.Pin = BOOT1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(BOOT1_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : CLK_IN_Pin */
   GPIO_InitStruct.Pin = CLK_IN_Pin;
@@ -604,6 +653,25 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void const * argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+	  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_15);
+	  osDelay(500);
+  }
+  /* USER CODE END 5 */
+}
 
 /**
   * @brief  Period elapsed callback in non blocking mode
