@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -50,6 +51,7 @@ CAN_HandleTypeDef hcan1;
 
 UART_HandleTypeDef huart2;
 
+osThreadId defaultTaskHandle;
 /* USER CODE BEGIN PV */
 #define TX_LED_GPIO_Port    GPIOD
 #define TX_LED_Pin          GPIO_PIN_12  /* LD4 */
@@ -66,14 +68,14 @@ typedef struct {
 } CycleWaypoint_t;
 
 static const CycleWaypoint_t g_cycleTable[] = {
-    {  0,    0 },  /* t=0s   : standing still                */
-    {  5,    0 },  /* t=5s   : still idle                    */
-    { 20,  500 },  /* t=20s  : accelerate up to 50.0 km/h    */
-    { 35,  500 },  /* t=35s  : cruise at 50.0 km/h           */
-    { 50,  900 },  /* t=50s  : accelerate up to 90.0 km/h    */
-    { 70,  900 },  /* t=70s  : cruise at 90.0 km/h           */
-    { 85,    0 },  /* t=85s  : decelerate down to a stop     */
-    { 95,    0 },  /* t=95s  : idle before the loop repeats  */
+    {  0,    0 },
+    {  2,    250 },
+    { 4,  500 },
+    { 6,  250 },
+    { 10,  900 },
+    { 13,  1800 },
+    { 15,   800 },
+    { 17,    0 },
 };
 #define CYCLE_POINTS  (sizeof(g_cycleTable) / sizeof(g_cycleTable[0]))
 
@@ -94,8 +96,10 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_CAN1_Init(void);
 static void MX_USART2_UART_Init(void);
+void StartDefaultTask(void const * argument);
+
 /* USER CODE BEGIN PFP */
-static void    Cycle_Evaluate(uint16_t time_s, uint16_t *speedX10_out, uint8_t *phase_out);
+static void Cycle_Evaluate(uint16_t time_s, uint16_t *speedX10_out, uint16_t *rpm_out, uint8_t *phase_out);
 static uint8_t CAN_SendAndWaitAck(uint32_t stdId, uint8_t msgtype, uint8_t seq, uint8_t *payload8);
 static void    CAN_SendFault(uint8_t faultCode);
 void            UART2_Print(char *str);
@@ -110,7 +114,7 @@ void UART2_Print(char *str)
     HAL_UART_Transmit(&huart2, (uint8_t *)str, strlen(str), HAL_MAX_DELAY);
 }
 
-static void Cycle_Evaluate(uint16_t time_s, uint16_t *speedX10_out, uint8_t *phase_out)
+static void Cycle_Evaluate(uint16_t time_s, uint16_t *speedX10_out, uint16_t *rpm_out, uint8_t *phase_out)
 {
     uint16_t totalDuration = g_cycleTable[CYCLE_POINTS - 1].time_s;
     uint16_t t = (totalDuration > 0) ? (time_s % totalDuration) : 0;
@@ -125,21 +129,39 @@ static void Cycle_Evaluate(uint16_t time_s, uint16_t *speedX10_out, uint8_t *pha
             uint16_t v0 = g_cycleTable[i].speed_x10_kmh;
             uint16_t v1 = g_cycleTable[i + 1].speed_x10_kmh;
 
+            // Nội suy tính tốc độ hiện tại
             uint16_t speed = (t1 == t0) ? v0 :
                 (uint16_t)(v0 + ((int32_t)(v1 - v0) * (int32_t)(t - t0)) / (int32_t)(t1 - t0));
 
+            // Xác định trạng thái Phase
             uint8_t phase;
             if (v1 > v0)      { phase = CYCLE_PHASE_ACCEL; }
             else if (v1 < v0) { phase = CYCLE_PHASE_DECEL; }
             else              { phase = (v0 == 0) ? CYCLE_PHASE_IDLE : CYCLE_PHASE_CRUISE; }
 
+            // --- TÍNH TOÁN RPM ĐỒNG BỘ TRỰC TIẾP THEO SPEED ---
+            uint16_t calculated_rpm = 0;
+            if (speed == 0) {
+                calculated_rpm = 800; // Động cơ nổ cầm chừng (Idle) khi xe dừng
+            } else {
+                // Tốc độ tăng/giảm -> RPM thay đổi tỷ lệ thuận
+                calculated_rpm = 800 + (speed * 30 / 10);
+                if (calculated_rpm > 8000) {
+                    calculated_rpm = 8000; // Giới hạn tua máy tối đa
+                }
+            }
+
+            // Gán kết quả ra các con trỏ đầu ra
             *speedX10_out = speed;
+            *rpm_out = calculated_rpm;
             *phase_out = phase;
             return;
         }
     }
 
+    // Trường hợp mặc định an toàn
     *speedX10_out = 0;
+    *rpm_out = 800;
     *phase_out = CYCLE_PHASE_IDLE;
 }
 
@@ -238,32 +260,25 @@ static void vTask_VehicleCycle(void *argument)
 
     for (;;)
     {
-        uint16_t speedX10;
-        uint8_t phase;
-        Cycle_Evaluate(cycleTimeS, &speedX10, &phase);
-
-        float speed_kmh = speedX10 / 10.0f;
-        float rpm_f = (speed_kmh * 1000.0f / 60.0f) / WHEEL_CIRCUMFERENCE_M;
-
-        uint8_t txData[8];
-        char msg[80];
-
         CAN_VehicleCyclePayload_t cP = {0};
         cP.seq = seq_cycle++;
         cP.cycle_time_s = cycleTimeS;
-        cP.speed_x10_kmh = speedX10;
-        cP.rpm = (uint16_t)rpm_f;
-        cP.phase = phase;
+
+        // Gọi trực tiếp hàm evaluate, trỏ thẳng vào các trường của gói CAN 8-byte
+        Cycle_Evaluate(cycleTimeS, &cP.speed_x10_kmh, &cP.rpm, &cP.phase);
+
+        uint8_t txData[8];
         memcpy(txData, &cP, sizeof(cP));
 
         uint32_t t0 = HAL_GetTick();
         uint8_t sendOk = CAN_SendAndWaitAck(CAN_ID_SIM_VEHICLE_CYCLE, CAN_MSG_VEHICLE_CYCLE, cP.seq, txData);
         uint32_t elapsed = HAL_GetTick() - t0;
 
+        char msg[80];
         if (sendOk)
         {
             sprintf(msg, "[CYCLE] t=%us speed=%u.%ukm/h rpm=%u phase=%u\r\n",
-                    cycleTimeS, speedX10 / 10, speedX10 % 10, cP.rpm, phase);
+                    cycleTimeS, cP.speed_x10_kmh / 10, cP.speed_x10_kmh % 10, cP.rpm, cP.phase);
         }
         else
         {
@@ -272,19 +287,7 @@ static void vTask_VehicleCycle(void *argument)
         }
         UART2_Print(msg);
 
-        /* ---- debug: timing + bus error state ---- */
-        char dbg[96];
-        sprintf(dbg, "[DBG] send took %lums\r\n", (unsigned long)elapsed);
-        UART2_Print(dbg);
-
-        sprintf(dbg, "[DBG] ESR=0x%08lX TEC=%lu REC=%lu\r\n",
-                (unsigned long)hcan1.Instance->ESR,
-                (unsigned long)((hcan1.Instance->ESR >> 16) & 0xFF),
-                (unsigned long)((hcan1.Instance->ESR >> 24) & 0xFF));
-        UART2_Print(dbg);
-
-        cycleTimeS++; /* advance the virtual clock by one sample period (1s) */
-
+        cycleTimeS++; /* Tăng thời gian ảo lên 1 giây */
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(CAN_CYCLE_SAMPLE_INTERVAL_MS));
     }
 }
@@ -336,8 +339,38 @@ int main(void)
       BaseType_t taskResult = xTaskCreate(vTask_VehicleCycle, "Cycle", TASK_STACK_SIZE, NULL, TASK_PRIO_CYCLE, NULL);
       sprintf(dbg, "[DBG] xTaskCreate result=%ld (pdPASS=%ld)\r\n", (long)taskResult, (long)pdPASS);
       UART2_Print(dbg);
-      vTaskStartScheduler();
+//      vTaskStartScheduler();
   /* USER CODE END 2 */
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* definition and creation of defaultTask */
+  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256);
+  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -626,6 +659,25 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void const * argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+	  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_15);
+	  osDelay(500);
+  }
+  /* USER CODE END 5 */
+}
 
 /**
   * @brief  Period elapsed callback in non blocking mode
