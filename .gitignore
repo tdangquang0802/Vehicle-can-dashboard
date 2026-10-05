@@ -2,8 +2,9 @@
 /*
 
 # Nhung giu lai
-!/F407_Handler/
-!/F407_Gate_way/
+!/Dashboard_brdg/
+!/Diag_tool_F103/
+!/ECU_F407/
 !/.gitignore
 !/README.md
 !/Dashboard/

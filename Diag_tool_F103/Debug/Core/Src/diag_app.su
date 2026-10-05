@@ -1,0 +1,2 @@
+../Core/Src/diag_app.c:20:6:diag_setup	8	static
+../Core/Src/diag_app.c:32:6:diag_loop	8	static

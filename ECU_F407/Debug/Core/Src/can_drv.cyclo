@@ -1,0 +1,11 @@
+../Core/Src/can_drv.c:36:17:cfg_filters	9
+../Core/Src/can_drv.c:87:10:can_init	5
+../Core/Src/can_drv.c:111:6:can_tx	3
+../Core/Src/can_drv.c:134:10:can_tx_overrun	1
+../Core/Src/can_drv.c:145:6:HAL_CAN_RxFifo0MsgPendingCallback	7
+../Core/Src/can_drv.c:170:6:can_rx_pop_ts	3
+../Core/Src/can_drv.c:184:6:can_rx_pop	1
+../Core/Src/can_drv.c:192:10:can_rx_total	1
+../Core/Src/can_drv.c:193:10:can_rx_drops	1
+../Core/Src/can_drv.c:195:9:can_bus_err	1
+../Core/Src/can_drv.c:203:9:can_bus_off	2

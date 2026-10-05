@@ -1,0 +1,9 @@
+../Core/Src/fault_mgr.c:21:6:fm_init	2
+../Core/Src/fault_mgr.c:30:13:eval_cond	5
+../Core/Src/fault_mgr.c:41:6:fm_run_10ms	7
+../Core/Src/fault_mgr.c:73:6:fm_mil	3
+../Core/Src/fault_mgr.c:83:10:fm_bitmap	3
+../Core/Src/fault_mgr.c:94:16:collect	5
+../Core/Src/fault_mgr.c:108:9:fm_get_confirmed	1
+../Core/Src/fault_mgr.c:109:9:fm_get_pending	1
+../Core/Src/fault_mgr.c:111:6:fm_clear_all	1

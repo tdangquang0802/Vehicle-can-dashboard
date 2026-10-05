@@ -1,0 +1,5 @@
+../Core/Src/sim.c:59:17:avg_push	3
+../Core/Src/sim.c:78:13:adc_read2	4
+../Core/Src/sim.c:98:6:sim_init	1
+../Core/Src/sim.c:116:6:sim_update_10ms	4
+../Core/Src/sim.c:157:18:sim_get	1
