@@ -1,5 +1,0 @@
-../Core/Src/sim.c:59:17:avg_push	24	static
-../Core/Src/sim.c:78:13:adc_read2	24	static
-../Core/Src/sim.c:98:6:sim_init	72	static
-../Core/Src/sim.c:116:6:sim_update_10ms	24	static
-../Core/Src/sim.c:157:18:sim_get	4	static
