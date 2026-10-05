@@ -1,2 +1,0 @@
-../Core/Src/wdg.c:11:6:wdg_kick	8	static
-../Core/Src/wdg.c:16:6:wdg_freeze_in_debug	4	static
