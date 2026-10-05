@@ -1,640 +1,276 @@
-# STM32 Automotive CAN Gateway & Cycle Simulator
+# CANsyn: Vehicle CAN Diagnostic
 
-A two-node automotive embedded communication project based on **STM32F407**, **FreeRTOS**, **CAN**, and **UART**.
+A small, bare-metal automotive diagnostic system on STM32: a simulated **vehicle ECU** that broadcasts live data and stores DTCs, a handheld **OBD-II style Diag tool** with a TFT, a **CAN-to-UART bridge**, and a **Qt dashboard** on the PC. Everything talks over one **CAN 2.0A, 500 kbps** bus.
 
-The project simulates vehicle operating data on one STM32 board, transfers the data over CAN to a Gateway board, and forwards the latest vehicle status to a PC application through UART.
+![Language](https://img.shields.io/badge/language-C99-blue)
+![MCU](https://img.shields.io/badge/MCU-STM32F407%20%7C%20STM32F103-03234B)
+![Framework](https://img.shields.io/badge/framework-STM32%20HAL-lightgrey)
+![Bus](https://img.shields.io/badge/CAN-2.0A%20%7C%20500%20kbps-green)
+![Host%20tests](https://img.shields.io/badge/host%20tests-54%20passing-brightgreen)
+
+> **Status:** firmware v1.0 is written and unit-tested on a PC, but **not yet validated on hardware**. The Qt dashboard is **not implemented yet**. See [Roadmap](#roadmap).
 
 ---
 
-## 1. Project Overview
+## Table of contents
 
-The system consists of two STM32F407 boards:
+- [Features](#features)
+- [System architecture](#system-architecture)
+- [Repository layout](#repository-layout)
+- [Hardware](#hardware)
+- [CAN and OBD protocol](#can-and-obd-protocol)
+- [Getting started](#getting-started)
+- [Testing](#testing)
+- [Design notes](#design-notes)
+- [Roadmap](#roadmap)
+- [Documentation](#documentation)
+- [License](#license)
+- [Author](#author)
 
-- **Cycle Simulator** — generates simulated vehicle speed, RPM, cycle time, and operating phase.
-- **CAN Gateway** — receives vehicle data over CAN, sends an ACK/NACK response, aggregates the latest data, and forwards it to a PC via UART.
+---
 
-### System Architecture
+## Features
 
-```text
-                 CAN Bus
-        500 kbit/s, Standard ID
- ┌──────────────────────┐
- │  STM32F407           │
- │  Cycle Simulator     │
- │                      │
- │  FreeRTOS            │
- │  Vehicle Cycle Task  │
- │  CAN TX/RX           │
- └──────────┬───────────┘
-            │
-            │ Vehicle Cycle
-            │ CAN ID: 0x088
-            ▼
- ┌──────────────────────┐
- │  STM32F407           │
- │  CAN Gateway         │
- │                      │
- │  FreeRTOS            │
- │  CAN RX Task         │
- │  UART TX Task        │
- │  Data Aggregation    │
- └──────────┬───────────┘
-            │
-            │ UART 115200 8N1
-            │ Binary Protocol
-            ▼
- ┌──────────────────────┐
- │  PC / Qt Dashboard    │
- │                      │
- │  UART Frame Parser    │
- │  Vehicle Monitoring  │
- └──────────────────────┘
+**Vehicle ECU (STM32F407)**
+- Simulated speed and rpm from a 95 s drive cycle, coolant temperature and battery voltage from ADC, wheel-speed sensor from a push button.
+- Periodic frames: `0x100` VEHICLE_STATE every 20 ms, `0x101` VEHICLE_STATUS every 100 ms.
+- Four DTCs (P0217, P0118, P0562, C0035) with an `IDLE → PENDING → CONFIRMED` state machine (2 s confirmation) and a MIL flag.
+- OBD-II server: services `01` (PID 05, 0C, 0D), `03`, `07`, `04`, with negative responses (NRC `11`, `31`, `22`).
+
+**Diag tool (STM32F103 + ST7735 TFT)**
+- Three buttons (Live / Read / Clear) and four screens: Home, Live data, DTC list, Clear result.
+- 100 ms timeout with one retry, "No response" reporting, two-press Clear with automatic verification (`03`) afterwards.
+- 1.8" TFT driven over SPI + DMA with **no framebuffer**: only changed text cells are redrawn.
+- Every result is also printed on UART.
+
+**Dashboard bridge (STM32F103)**
+- Listens in CAN normal mode (ACKs frames) but **never transmits**; this is enforced at link time.
+- Forwards every frame to the PC as `AA 55 LEN MSG PAYLOAD CRC8 0A` and sends a 1 Hz statistics/heartbeat message.
+
+**Qt dashboard (PC)** *(planned)*
+- Live gauges, MIL lamp and DTC list, CAN frame monitor, diagnostic session decoder, `ECU LOST` / `BRIDGE LOST` detection.
+
+**Engineering rules followed across all nodes**
+- C99 + STM32 HAL, no dynamic allocation, no RTOS (super-loop + 1 ms SysTick), no `HAL_Delay()`.
+- ISRs only push into lock-free ring buffers; all processing happens in the main loop.
+- IWDG and automatic bus-off recovery on every node.
+
+---
+
+## System architecture
+
+```mermaid
+flowchart LR
+  ECU["Vehicle ECU<br/>STM32F407 · 120 Ω"] --- BUS(("CAN bus<br/>500 kbps"))
+  BUS --- OBD["OBD header<br/>(short stub)"]
+  OBD --- DIAG["Diag tool<br/>STM32F103 + TFT"]
+  BUS --- BRG["Dashboard bridge<br/>STM32F103 · 120 Ω"]
+  BRG -- "UART 115200 8N1" --> PC["PC · Qt dashboard"]
 ```
 
----
-
-## 2. Features
-
-### Cycle Simulator
-
-- Simulates a predefined vehicle driving cycle.
-- Generates:
-  - Vehicle speed
-  - Wheel RPM
-  - Cycle time
-  - Driving phase
-- Sends vehicle data over CAN every 1 second.
-- Waits for Gateway ACK.
-- Supports CAN transmission retry mechanism.
-- Reports communication failure through a CAN fault message.
-- Uses FreeRTOS for task scheduling and synchronization.
-
-### CAN Gateway
-
-- Receives CAN messages using interrupt-driven RX.
-- Uses a FreeRTOS queue to transfer CAN data from ISR to a processing task.
-- Validates and processes vehicle-cycle messages.
-- Sends CAN ACK/NACK responses.
-- Maintains the latest vehicle-cycle snapshot.
-- Forwards vehicle data to a PC through UART.
-- Detects stale CAN data.
-- Forwards communication faults to the PC.
-
-### PC Interface
-
-The Gateway uses a lightweight binary UART protocol designed for a Qt/C++ dashboard.
-
-The protocol includes:
-
-- Start-of-frame detection
-- Message ID
-- Payload length
-- Packed payload
-- CRC-8 validation
-- End-of-frame marker
+The 120 Ω terminators sit on the **ECU** and the **Bridge** (the two bus ends), so plugging or unplugging the Diag tool does not change the bus termination. The vehicle and the dashboard keep working with the Diag tool removed.
 
 ---
 
-## 3. Hardware
+## Repository layout
 
-### Required Hardware
-
-| Component | Quantity | Description |
-|---|---:|---|
-| STM32F407 board | 2 | Simulator and Gateway |
-| CAN transceiver | 2 | CAN physical layer |
-| USB-UART interface | 1 | Gateway-to-PC communication |
-| CAN bus wiring | 1 | CANH, CANL and GND |
-| 120 Ω termination resistor | 2 | CAN bus termination |
-
-### CAN Bus
-
-The two boards communicate using:
-
-```text
-CANH ───────────────── CANH
-CANL ───────────────── CANL
-GND  ───────────────── GND
 ```
-
-A 120 Ω termination resistor should be installed at each physical end of the CAN bus.
-
-With both boards powered off, the resistance measured between CANH and CANL should normally be approximately:
-
-```text
-60 Ω
-```
-
----
-
-## 4. Software Environment
-
-### Development Environment
-
-- STM32CubeIDE 1.19.x
-- GNU Arm Embedded Toolchain
-- STM32 HAL
-- FreeRTOS Kernel
-- C language
-
-### Target MCU
-
-```text
-STM32F407
-ARM Cortex-M4
-```
-
-### Communication
-
-| Interface | Configuration |
-|---|---|
-| CAN | 500 kbit/s |
-| CAN Frame | Standard ID, 11-bit |
-| UART | 115200 baud |
-| UART Format | 8-N-1 |
-
----
-
-## 5. Repository Structure
-
-A typical project structure is:
-
-```text
 .
-├── CycleSimulator/
-│   ├── Core/
-│   │   ├── Inc/
-│   │   └── Src/
-│   ├── FreeRTOS/
-│   └── ...
-│
-├── Gateway/
-│   ├── Core/
-│   │   ├── Inc/
-│   │   └── Src/
-│   ├── FreeRTOS/
-│   └── ...
-│
-├── Common/
-│   └── can_protocol.h
-│
-└── README.md
+├── common/        Shared code: tick helpers, CRC-8, ring buffer, CAN driver, protocol constants
+├── ecu_f407/      Vehicle ECU firmware (simulation, fault manager, OBD server)
+├── bridge_f103/   CAN → UART bridge firmware
+├── diag_f103/     Diag tool firmware (OBD client, buttons, TFT driver, UI)
+├── host_test/     Unit tests that build and run on a PC with gcc
+├── docs/          Guidelines (STM32CubeIDE setup, in Vietnamese)
+└── qt_dashboard/  (planned) Qt/QML PC application
 ```
 
-The exact directory structure may depend on the STM32CubeIDE project configuration.
+Each firmware folder contains `Inc/` and `Src/`. A CubeIDE project for a node uses **all of `common/`** plus **only that node's folder**; every node has its own `app_config.h`.
 
 ---
 
-## 6. CAN Protocol
+## Hardware
 
-The CAN identifier is organized as follows:
+| Node | MCU | Peripherals |
+| --- | --- | --- |
+| Vehicle ECU | STM32F407 | CAN1, ADC1 (2 channels), 1 button, 1 LED |
+| Dashboard bridge | STM32F103 | CAN, USART1 + DMA to a USB-TTL adapter, LED on PC13 |
+| Diag tool | STM32F103 | CAN, SPI1 + DMA to the ST7735 TFT, 3 buttons, USART1 |
 
-```text
-10 9 8 7 | 6 5 4 3 | 2 1 0
-  Node    Message      Sequence
-            Type
-```
+Every board uses an **SN65HVD230 (3.3 V)** CAN transceiver.
 
-### Node IDs
+<details>
+<summary><b>Pin assignment</b> (proposed, adjust to your boards)</summary>
 
-| Node | Value |
-|---|---:|
-| Broadcast | `0x0` |
-| Simulator | `0x1` |
-| Gateway | `0x2` |
-| PC Tool | `0xF` |
+| Node | Pins |
+| --- | --- |
+| ECU F407 | CAN1 PA11 / PA12 · ADC1_IN1 PA1 (coolant) · ADC1_IN4 PA4 (Vbat) · wheel button PB0 (pull-up) · USART1 PA9 / PA10 (debug) |
+| Bridge F103 | CAN PA11 / PA12 · USART1 PA9 / PA10 to USB-TTL · LED PC13 |
+| Diag F103 | CAN PA11 / PA12 · SPI1 SCK PA5, MOSI PA7 (DMA1 Ch3) · CS PA4, DC PB0, RST PB1 · buttons PB12 Live, PB13 Read, PB14 Clear · USART1 PA9 / PA10 |
 
-### Message Types
-
-| Message | Value | Description |
-|---|---:|---|
-| HEARTBEAT | `0x0` | Heartbeat |
-| VEHICLE_CYCLE | `0x1` | Vehicle cycle data |
-| ACK | `0x2` | Positive acknowledgement |
-| NACK | `0x3` | Negative acknowledgement |
-| SIM_FAULT | `0x4` | Simulator fault |
-
-### Main CAN IDs
-
-| CAN ID | Direction | Description |
-|---|---|---|
-| `0x088` | Simulator → Gateway | Vehicle cycle |
-| `0x0A0` | Simulator → Gateway | Simulator fault |
-| `0x080` | Simulator → Gateway | Simulator heartbeat |
-| `0x110` | Gateway → Simulator | ACK |
-| `0x118` | Gateway → Simulator | NACK |
-| `0x100` | Gateway → Simulator | Gateway heartbeat |
+Optional OBD-II style connector on the bus: pin 6 CAN-H, pin 14 CAN-L, pins 4 / 5 GND.
+</details>
 
 ---
 
-## 7. Vehicle Cycle Payload
+## CAN and OBD protocol
 
-The vehicle-cycle CAN payload is 8 bytes:
+### CAN matrix
 
-```text
-Byte 0     Sequence
-Byte 1-2   Cycle time [s]
-Byte 3-4   Speed × 10 [km/h]
-Byte 5-6   Wheel RPM
-Byte 7     Driving phase
+| ID | Name | Source | Period | DLC |
+| --- | --- | --- | --- | --- |
+| `0x100` | VEHICLE_STATE | ECU | 20 ms | 8 |
+| `0x101` | VEHICLE_STATUS | ECU | 100 ms | 8 |
+| `0x7DF` | OBD_REQ (broadcast) | Diag | on demand | 8 |
+| `0x7E0` | OBD_REQ (physical) | Diag | on demand | 8 |
+| `0x7E8` | OBD_RESP | ECU | on request | 8 |
+
+Lower IDs win arbitration, so vehicle state frames always have priority over diagnostics. Estimated bus load is about 1.6 % in normal operation and about 2.5 % with Live data at 5 Hz.
+
+`0x100` (little-endian): `speed u16 (0.1 km/h)` · `rpm u16` · `coolant u8 (value − 40 = °C)` · `throttle u8 (%)` · `Vbat u8 (0.1 V)` · `counter u8`
+
+`0x101`: `bit0 = MIL` · `confirmed DTC count` · `fault bitmap u16` · `engine state (0 OFF, 1 CRANK, 2 RUN)` · `reserved` · `counter u8`
+
+### OBD-II (ISO 15765-4, single frame)
+
+| Service | Request | Positive response on `0x7E8` |
+| --- | --- | --- |
+| `01` PID `05` coolant | `02 01 05` | `03 41 05 A` (A − 40 = °C) |
+| `01` PID `0C` rpm | `02 01 0C` | `04 41 0C A B` ((256A + B) / 4) |
+| `01` PID `0D` speed | `02 01 0D` | `03 41 0D A` (km/h) |
+| `03` stored DTCs | `01 03` | `len 43 N D1H D1L D2H D2L` (N = total, at most 2 codes shown) |
+| `07` pending DTCs | `01 07` | same format, SID `47` |
+| `04` clear DTCs | `01 04` | `01 44` |
+| error | | `03 7F SID NRC`: `11` not supported, `31` unknown PID, `22` conditions not correct |
+
+### DTCs
+
+| Code | Condition (evaluated every 10 ms, confirmed after 2 s) |
+| --- | --- |
+| P0217 | coolant > 110 °C (suppressed while P0118 is active) |
+| P0118 | raw coolant ADC outside [100, 3995] |
+| P0562 | battery voltage < 10.5 V |
+| C0035 | wheel-speed sensor button pressed |
+
+DTCs are kept in RAM and stay `CONFIRMED` until cleared with service `04`. If the fault condition is still present after a clear, the DTC is set again.
+
+### UART frame (Bridge → PC)
+
+```
+AA 55 LEN MSG PAYLOAD CRC8 0A
 ```
 
-All multi-byte integer values are transmitted in **little-endian** format.
+`LEN` is the payload length; CRC-8 uses polynomial `0x07`, init `0`, over `MSG + PAYLOAD`.
 
-### Driving Phases
-
-| Value | Phase |
-|---:|---|
-| `0` | IDLE |
-| `1` | ACCEL |
-| `2` | CRUISE |
-| `3` | DECEL |
+| MSG | Payload |
+| --- | --- |
+| `0x20` CAN_RAW | `ts u32 (ms)` · `id u16` · `dlc u8` · `data[dlc]` |
+| `0x21` STATS (1 Hz, heartbeat) | `rx_total u32` · `dropped u16` · `bus_err u8` · `bus_off u8` |
 
 ---
 
-## 8. Vehicle Driving Cycle
+## Getting started
 
-The simulator uses the following predefined cycle:
+### Prerequisites
 
-| Time [s] | Speed [km/h] | Phase |
-|---:|---:|---|
-| 0 | 0 | IDLE |
-| 5 | 0 | IDLE |
-| 20 | 50 | ACCEL |
-| 35 | 50 | CRUISE |
-| 50 | 90 | ACCEL |
-| 70 | 90 | CRUISE |
-| 85 | 0 | DECEL |
-| 95 | 0 | IDLE |
+- STM32CubeIDE and STM32CubeMX (HAL for F1 and F4)
+- ST-Link programmer
+- 3 CAN transceivers (SN65HVD230), 2 × 120 Ω resistors, a USB-TTL adapter, a 1.8" ST7735 TFT module
+- `gcc` and `make` for the host tests (Linux, WSL, or MSYS2)
 
-The simulator interpolates the speed linearly between waypoints.
+### Build and flash
 
-The cycle repeats after 95 seconds.
+1. Clone the repository.
+   ```bash
+   git clone <your-repo-url>
+   cd <repo>
+   ```
+2. Run the host tests first (see [Testing](#testing)).
+3. For each node, create an STM32CubeIDE project with the CubeMX settings from the setup guide (clock, CAN bit timing, ADC / SPI / UART DMA, IWDG, GPIO user labels).
+4. Copy `common/` and the node's folder into `Core/Inc` and `Core/Src`.
+5. Add the three lines to `main.c` inside the USER CODE blocks:
 
-Wheel RPM is calculated from vehicle speed using the configured wheel circumference:
+   | Node | In `USER CODE BEGIN 2` | In `USER CODE BEGIN 3` |
+   | --- | --- | --- |
+   | ECU | `ecu_setup();` | `ecu_loop();` |
+   | Bridge | `bridge_setup();` | `bridge_loop();` |
+   | Diag | `diag_setup();` | `diag_loop();` |
 
-```text
-Wheel circumference = 1.885 m
-```
+6. Build in the **Debug** configuration (it defines `DEBUG`, which freezes the IWDG while the core is halted) and flash.
 
-```text
-RPM = (Speed[km/h] × 1000 / 60) / Wheel circumference
-```
+The step-by-step CubeMX configuration, wiring, bring-up order and troubleshooting table are in [`docs/GUIDELINE_STM32CubeIDE_vi.md`](docs/GUIDELINE_STM32CubeIDE_vi.md).
 
----
+### Configuration
 
-## 9. CAN ACK / Retry Mechanism
-
-The Simulator requires an ACK from the Gateway after each vehicle-cycle transmission.
-
-Current configuration:
-
-```text
-ACK timeout = 200 ms
-Maximum retries = 3
-```
-
-The communication sequence is:
-
-```text
-Simulator                  Gateway
-    │                         │
-    │── Vehicle Cycle ───────>│
-    │                         │
-    │<──────── ACK ───────────│
-    │                         │
-    │       Next cycle        │
-```
-
-If the ACK is not received within the timeout:
-
-```text
-TX
- │
- ├── Timeout
- │
- ├── Retry #2
- │
- ├── Timeout
- │
- ├── Retry #3
- │
- └── Failure
-```
-
-After all retries fail, the Simulator sends a `SIM_FAULT` CAN message.
+| File | What to adjust |
+| --- | --- |
+| `ecu_f407/Inc/app_config.h` | `ECU08_ENABLED` (reject Clear while speed > 0), `RPM_PER_KMH`, `RPM_IDLE` |
+| `ecu_f407/Src/sim.c` | `s_cycle[]`: the 95 s drive cycle table |
+| `diag_f103/Inc/app_config.h` | TFT orientation / colour order (`TFT_MADCTL_LANDSCAPE`) and panel offsets |
 
 ---
 
-## 10. UART Protocol
+## Testing
 
-The Gateway communicates with the PC using a binary frame.
+The pure-logic modules (`fault_mgr`, `obd_srv`, `obd_client`, `dtc_text`, CRC-8, ring buffer, `tick_due`) have no HAL dependency and run on a PC:
 
-### Frame Format
-
-```text
-+------+------+-----+--------+---------+------+-----+
-| SOF1 | SOF2 | LEN | MSG_ID | PAYLOAD | CRC8 | EOF |
-+------+------+-----+--------+---------+------+-----+
-|  AA  |  55  |     |        |         |      | 0A  |
-+------+------+-----+--------+---------+------+-----+
+```bash
+make -C host_test run
+# ...
+# 54 passed, 0 failed
 ```
 
-### Frame Definition
+### Acceptance checks on hardware
 
-```text
-SOF1    = 0xAA
-SOF2    = 0x55
-LEN     = Payload length
-MSG_ID  = Message identifier
-CRC8    = CRC-8 over MSG_ID + PAYLOAD
-EOF     = 0x0A
-```
-
-The total frame size is:
-
-```text
-LEN + 6 bytes
-```
-
-### CRC-8
-
-```text
-Polynomial : 0x07
-Initial    : 0x00
-Reflection  : None
-Final XOR   : 0x00
-```
+| ID | Check |
+| --- | --- |
+| AC-1 | Run for 10 minutes: all values present, MIL off, no CRC errors |
+| AC-2 | Coolant above threshold: P0217 appears after 2.0 to 2.3 s, MIL on, dashboard shows the fault |
+| AC-3 | Read DTC shows P0217 within 100 ms |
+| AC-4 | Lower the temperature, then Clear: MIL off, list empty, `03` returns 0 DTCs |
+| AC-5 | Clear while the fault persists: the DTC comes back after 2 s |
+| AC-6 | Unplug the ECU or the bridge: `LOST` is reported at the right threshold and recovers on reconnect |
 
 ---
 
-## 11. UART Message Types
+## Design notes
 
-### Cycle Snapshot
-
-```text
-MSG_ID = 0x01
-Payload length = 9 bytes
-```
-
-Payload:
-
-```text
-Byte 0-1   Cycle time [s]
-Byte 2-3   Speed × 10 [km/h]
-Byte 4-5   RPM
-Byte 6     Phase
-Byte 7     Data validity
-Byte 8     Reserved
-```
-
-`data_valid`:
-
-```text
-0 = CAN data is stale
-1 = CAN data is fresh
-```
-
-The Gateway considers CAN data stale after:
-
-```text
-3000 ms
-```
-
-### Fault Message
-
-```text
-MSG_ID = 0x03
-Payload length = 1 byte
-```
-
-Payload:
-
-```text
-Byte 0 = Fault code
-```
+- **Bridge cannot transmit:** `bridge_f103/Inc/app_config.h` defines `CAN_RX_ONLY`, which removes `can_tx()` from the driver. Any call to it fails at link time.
+- **CAN is started last:** `can_init()` is called at the very end of each `*_setup()`, after all buffers and state exist, to avoid a HardFault when a frame arrives during initialization.
+- **Limit of 2 DTCs per reply:** the MVP uses single-frame responses. With all four DTCs confirmed, the Diag tool shows "2 of N". Multi-frame ISO-TP is a planned extension.
+- **Clear while driving:** with `ECU08_ENABLED = 1` and the 95 s cycle, Clear only succeeds in the standstill (IDLE) phases. Wait for the right phase or disable the flag for demos.
+- **`bus_err` statistic** is `max(TEC, REC)` read from the CAN error status register; error interrupts are deliberately not used.
 
 ---
 
-## 12. FreeRTOS Architecture
+## Roadmap
 
-### Simulator
-
-Main task:
-
-```text
-Vehicle Cycle Task
-       │
-       ├── Calculate vehicle state
-       ├── Build CAN payload
-       ├── Send CAN frame
-       ├── Wait for ACK
-       └── Print status to UART
-```
-
-CAN reception is handled through an interrupt callback.
-
-A binary semaphore is used to notify the task when an ACK/NACK is received.
-
-A mutex protects CAN transmission and ACK state.
-
-### Gateway
-
-```text
-CAN RX Interrupt
-       │
-       ▼
-FreeRTOS Queue
-       │
-       ▼
-CAN RX Processing Task
-       │
-       ├── Parse CAN message
-       ├── Update data aggregation
-       ├── Send ACK
-       └── Forward faults
-       
-New Data Semaphore
-       │
-       ▼
-UART TX Task
-       │
-       ▼
-UART Binary Frame
-       │
-       ▼
-PC / Qt Dashboard
-```
-
-The CAN ISR performs minimal processing and pushes received frames into a FreeRTOS queue.
+- [x] Common module, ECU, Bridge and Diag tool firmware
+- [x] Host unit tests for the logic modules
+- [x] STM32CubeIDE setup guideline
+- [ ] Validation on hardware (bit timing, ADC scaling, TFT offsets)
+- [ ] Qt dashboard: `UartLink`, `CanDecoder`, `DtcTable`, `LinkMonitor`, `FrameModel`, `EventLog`, QML UI
+- [ ] ISO-TP multi-frame for more than 2 DTCs (ECU-11), scrolling DTC list
+- [ ] Optional: DTC persistence in flash
 
 ---
 
-## 13. Build and Flash
+## Documentation
 
-### 1. Import the projects
-
-Open the STM32CubeIDE workspace and import both:
-
-```text
-CycleSimulator
-Gateway
-```
-
-### 2. Build
-
-Build both projects:
-
-```text
-Project → Build Project
-```
-
-### 3. Flash
-
-Flash the corresponding firmware to each STM32F407 board:
-
-```text
-Cycle Simulator firmware → Simulator board
-Gateway firmware         → Gateway board
-```
-
-### 4. Connect the CAN bus
-
-```text
-Simulator CANH ───── Gateway CANH
-Simulator CANL ───── Gateway CANL
-Simulator GND  ───── Gateway GND
-```
-
-Make sure the CAN transceivers are correctly powered and terminated.
-
----
-
-## 14. Expected Operation
-
-After startup, the Gateway prints:
-
-```text
-F407 Gateway (FreeRTOS) starting...
-```
-
-The Simulator periodically generates vehicle-cycle data.
-
-For example:
-
-```text
-[CYCLE] t=0s speed=0.0km/h rpm=0 phase=0
-[CYCLE] t=5s speed=0.0km/h rpm=0 phase=0
-[CYCLE] t=20s speed=50.0km/h rpm=442 phase=2
-[CYCLE] t=50s speed=90.0km/h rpm=795 phase=2
-```
-
-The Gateway does **not** output these human-readable cycle messages. Its UART output is a binary protocol intended for the PC/Qt application.
-
----
-
-## 15. Debugging
-
-When communication does not work, check the system in the following order:
-
-### CAN physical layer
-
-- CANH connected to CANH
-- CANL connected to CANL
-- Common GND
-- CAN transceivers correctly powered
-- 120 Ω termination at both ends of the bus
-
-### CAN configuration
-
-Both boards must use:
-
-```text
-500 kbit/s
-11-bit Standard ID
-```
-
-### Gateway RX
-
-Verify:
-
-```text
-CAN1 RX FIFO0
-CAN1_RX0_IRQn
-HAL_CAN_IRQHandler()
-HAL_CAN_RxFifo0MsgPendingCallback()
-```
-
-### FreeRTOS
-
-Verify that:
-
-```text
-CAN RX ISR
-    ↓
-xQueueSendFromISR()
-    ↓
-CAN RX Task
-```
-
-is working correctly.
-
-### UART
-
-Use:
-
-```text
-115200 baud
-8 data bits
-No parity
-1 stop bit
-```
-
-The Gateway UART stream is binary and should be decoded using the UART protocol rather than viewed directly in a text terminal.
-
----
-
-## 16. Future Improvements
-
-Potential extensions include:
-
-- Qt/C++ PC dashboard
-- CAN bus monitoring and diagnostics
-- CAN heartbeat and node supervision
-- Additional vehicle signals
-- Fault injection and fault recovery
-- CAN bus-off recovery
-- UART command interface from PC to Gateway
-- Configurable driving-cycle profiles
-- Automated communication tests
-- Hardware-in-the-loop testing
-- Unit tests for CAN and UART protocol layers
-- DBC-based CAN signal definitions
-
----
-
-## 17. Project Goals
-
-This project is intended as a practical embedded/automotive software exercise covering:
-
-- STM32 firmware development
-- ARM Cortex-M4
-- FreeRTOS
-- CAN communication
-- UART communication
-- Interrupt handling
-- Inter-task communication
-- Mutexes and semaphores
-- Communication retry mechanisms
-- Binary protocol design
-- CRC implementation
-- Fault handling
-- Embedded debugging
-- Gateway architecture
-- PC-to-ECU communication
+| Document | Content |
+| --- | --- |
+| `docs/GUIDELINE_STM32CubeIDE_vi.md` | CubeMX and CubeIDE setup per node, wiring, bring-up, troubleshooting (Vietnamese) |
+| Requirements + System design v1.0 | Requirements baseline, architecture, CAN matrix, OBD protocol, state machine |
+| Function design v1.0 | Module prototypes, logic and the host test plan |
 
 ---
 
 ## License
 
-This project is for educational and engineering development purposes.
+To be decided. Add a `LICENSE` file (for example MIT) before publishing.
+
+---
+
+## Author
+
+**Dang Quang Trung**, embedded systems engineer, Ho Chi Minh City, Vietnam.
