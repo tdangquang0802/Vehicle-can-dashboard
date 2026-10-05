@@ -6,7 +6,6 @@ A small, bare-metal automotive diagnostic system on STM32: a simulated **vehicle
 ![MCU](https://img.shields.io/badge/MCU-STM32F407%20%7C%20STM32F103-03234B)
 ![Framework](https://img.shields.io/badge/framework-STM32%20HAL-lightgrey)
 ![Bus](https://img.shields.io/badge/CAN-2.0A%20%7C%20500%20kbps-green)
-![Host%20tests](https://img.shields.io/badge/host%20tests-54%20passing-brightgreen)
 
 > **Status:** firmware v1.0 is written and unit-tested on a PC, but **not yet validated on hardware**. The Qt dashboard is **not implemented yet**. See [Roadmap](#roadmap).
 
