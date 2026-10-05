@@ -1,0 +1,9 @@
+../Core/Src/fault_mgr.c:21:6:fm_init	16	static
+../Core/Src/fault_mgr.c:30:13:eval_cond	16	static
+../Core/Src/fault_mgr.c:41:6:fm_run_10ms	32	static
+../Core/Src/fault_mgr.c:73:6:fm_mil	16	static
+../Core/Src/fault_mgr.c:83:10:fm_bitmap	16	static
+../Core/Src/fault_mgr.c:94:16:collect	24	static
+../Core/Src/fault_mgr.c:108:9:fm_get_confirmed	16	static
+../Core/Src/fault_mgr.c:109:9:fm_get_pending	16	static
+../Core/Src/fault_mgr.c:111:6:fm_clear_all	8	static

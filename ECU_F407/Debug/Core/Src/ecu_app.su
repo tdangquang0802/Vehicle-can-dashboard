@@ -1,0 +1,4 @@
+../Core/Src/ecu_app.c:24:13:app_tx_state	32	static
+../Core/Src/ecu_app.c:41:13:app_tx_status	32	static
+../Core/Src/ecu_app.c:58:6:ecu_setup	8	static
+../Core/Src/ecu_app.c:70:6:ecu_loop	8	static
