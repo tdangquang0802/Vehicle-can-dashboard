@@ -1,0 +1,14 @@
+../Core/Src/obd_client.c:24:6:obd_client_init	1
+../Core/Src/obd_client.c:32:10:obd_request	5
+../Core/Src/obd_client.c:60:13:handle_response	6
+../Core/Src/obd_client.c:74:6:obd_poll	8
+../Core/Src/obd_client.c:100:21:obd_state	1
+../Core/Src/obd_client.c:101:21:obd_result	1
+../Core/Src/obd_client.c:103:6:obd_ack	2
+../Core/Src/obd_client.c:110:6:obd_link_ok	3
+../Core/Src/obd_client.c:115:6:obd_mil	1
+../Core/Src/obd_client.c:118:9:dec_dtc_total	1
+../Core/Src/obd_client.c:120:9:dec_dtc_codes	4
+../Core/Src/obd_client.c:136:10:dec_rpm	1
+../Core/Src/obd_client.c:141:9:dec_speed	1
+../Core/Src/obd_client.c:142:9:dec_coolant	1

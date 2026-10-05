@@ -1,0 +1,7 @@
+../Core/Src/obd_srv.c:25:13:obd_send	40	static
+../Core/Src/obd_srv.c:46:13:obd_neg	24	static
+../Core/Src/obd_srv.c:54:13:svc01	32	static
+../Core/Src/obd_srv.c:96:13:svc03_07	32	static
+../Core/Src/obd_srv.c:114:13:svc04	16	static
+../Core/Src/obd_srv.c:130:13:obd_handle	24	static
+../Core/Src/obd_srv.c:162:6:obdsrv_poll	24	static
