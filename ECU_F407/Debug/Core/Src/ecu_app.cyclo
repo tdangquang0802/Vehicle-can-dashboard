@@ -1,4 +1,0 @@
-../Core/Src/ecu_app.c:24:13:app_tx_state	1
-../Core/Src/ecu_app.c:41:13:app_tx_status	2
-../Core/Src/ecu_app.c:58:6:ecu_setup	1
-../Core/Src/ecu_app.c:70:6:ecu_loop	5
